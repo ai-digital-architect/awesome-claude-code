@@ -66,7 +66,7 @@ claude code
 │   ├── commands/        # Slash commands
 │   ├── hooks/           # Automation scripts
 │   ├── logs/            # Activity logs
-│   ├── skills/          # Domain expertise
+│   ├── skills/          # Domain expertise - claude skills
 │   └── settings.json    # Configuration
 │
 ├── dev/                 # 🛠️ Development workspace

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schemas/skill-rules.schema.json",
+  "version": "1.0.0",
+  "description": "Skill activation rules for awesome-claude-code project",
+  "skills": {
+    "markdown-standards": {
+      "type": "domain",
+      "description": "Professional markdown documentation standards",
+      "fileTriggers": {
+        "pathPatterns": [
+          "**/*.md"
+        ],
+        "excludePatterns": [
+          "**/node_modules/**",
+          "**/dist/**",
+          "**/.git/**"
+        ]
+      },
+      "priority": "medium",
+      "autoActivate": true
+    }
+  }
+}
