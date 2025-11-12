@@ -1,0 +1,34 @@
+# Sensitive data
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+credentials/
+
+# Large files
+node_modules/
+dist/
+build/
+*.log
+*.logs
+
+# Temporary files
+.cache/
+tmp/
+*.tmp
+*.swp
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Build artifacts
+*.pyc
+__pycache__/
+*.class
+*.o
+*.so

@@ -1,0 +1,6 @@
+# Claude Code - User-specific settings
+.claude/settings.local.json
+
+# Claude Code - Working directories
+dev/scratch/
+*.scratchpad.md
