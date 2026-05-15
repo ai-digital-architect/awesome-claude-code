@@ -1,0 +1,569 @@
+
+
+## Section 1: End-to-End Architecture Flow
+
+### Diagram 1.1: High-Level End-to-End Flow
+
+#### Diagram Purpose
+Communicates the complete pipeline journey from developer commit to production deployment. Satisfies ask.md requirement: "Control plane → delegate → execution environment → artifact → deploy target" with "explicit callouts for all systems involved."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style architectural diagram showing an end-to-end CI/CD pipeline flow. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette. Complex systems should be reduced to basic boxes, clouds, or cylinders.
+
+Layout: Left-to-right flow with the following major elements:
+
+1. DEVELOPER (stick figure icon with laptop, left side) — labeled "Developer"
+2. Arrow labeled "git push" pointing right to:
+3. BITBUCKET (box with source control icon) — labeled "Bitbucket Source Control"
+4. Arrow labeled "webhook trigger" pointing right to:
+5. HARNESS SAAS (cloud shape, blue muted fill) — labeled "Harness SaaS Control Plane (app.harness.io)" — this is the orchestration hub
+6. From Harness, an arrow labeled "task dispatch (HTTPS via proxy)" pointing down to:
+7. CI DELEGATE GROUP (rounded box, green muted fill) — labeled "CI Delegates (EKS, 4-8 pods)" 
+8. From CI Delegate, arrow labeled "spawn ephemeral pod" pointing right to:
+9. BUILD POD (dashed box indicating ephemeral) — labeled "Ephemeral Build Pod (ns: build namespace)"
+10. From Build Pod, TWO arrows:
+    - Up-right to ARTIFACT STORAGE (cylinder, muted orange) — labeled "ECR + S3 Cache" with bidirectional arrows labeled "pull base image / push built image"
+    - Down-right arrow back to CI Delegate labeled "report results"
+11. From CI Delegate, arrow back up to Harness labeled "task complete"
+12. From Harness, arrow labeled "OPA Policy Evaluation (42+ policies)" looping back to itself
+13. From Harness, TWO arrows going right:
+    - One to EKS CD DELEGATE (box, yellow muted fill) labeled "EKS CD Delegate (1 replica)" with arrow to EKS TARGET (box) labeled "EKS App Deployment"
+    - One to ECS CD DELEGATE (box, green muted fill) labeled "ECS CD Delegates (2-5 replicas)" with arrow to ECS TARGET (box) labeled "ECS App Deployment"
+
+Add a subtle dashed boundary box around the AWS elements labeled "AWS PROD Account — us-east-1". The Harness SaaS cloud should be outside this boundary. Add a proxy icon (small orange box) between the AWS boundary and Harness SaaS labeled "Egress Proxy (port 11443)".
+
+Annotations (thin italic text):
+- Near Harness: "SaaS — not enterprise-hosted"
+- Near proxy: "All delegate traffic routes through corporate proxy"
+- Near Build Pod: "Lifetime = build duration only"
+- Near EKS CD: "⚠️ Single replica — no HA"
+
+Keep the overall feel hand-drawn/sketchy like Excalidraw. No gradients. Muted blues, greens, oranges, and yellows only.
+```
+
+---
+
+### Diagram 1.2: Network Boundary View
+
+#### Diagram Purpose
+Shows all network boundaries, VPCs, subnets, and ingress/egress paths. Satisfies ask.md requirement: "Network boundaries (VPCs, subnets, ingress/egress paths)."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style network boundary diagram for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette. Complex systems should be reduced to basic boxes, clouds, or cylinders.
+
+Layout: Three major zones arranged left-to-right:
+
+ZONE 1 — CORPORATE NETWORK (large dashed rectangle, left side, muted gray fill):
+- Developer Workstation (laptop icon)
+- Bitbucket Source Control (box icon)
+- Label: "Corporate Network"
+
+ZONE 2 — INTERNET (narrow vertical band in middle, no fill, just dashed borders):
+- Harness SaaS (cloud shape, muted blue fill) — labeled "Harness SaaS (Control Plane)"
+- Bold annotation: "No inbound connections to enterprise — delegates poll outbound only"
+
+ZONE 3 — AWS PROD VPC (large solid rectangle, right side, muted green fill):
+- Label at top: "AWS PROD VPC — us-east-1"
+- Inside, sub-zones:
+  - PRIVATE SUBNETS (inner rectangle, darker muted green):
+    - EKS Clusters (box) — "EKS Nodes + Delegates"
+    - ECS Fargate (box) — "ECS Delegate Tasks"
+  - VPC ENDPOINTS (small grouped boxes at bottom):
+    - "Secrets Manager | ECR | S3 | SNS | Lambda"
+    - Label: "Private — no NAT required"
+  - EGRESS PROXY (orange box at the border between VPC and Internet):
+    - Label: "Corporate Proxy (port 11443)"
+  - NAT GATEWAY (small box): "Non-endpoint egress only"
+
+Connections (thin lines with arrows):
+- Developer → Bitbucket (HTTPS)
+- Bitbucket → Harness SaaS (webhook)
+- EKS/ECS → Proxy → Harness SaaS (outbound HTTPS:443, bold arrow — this is the critical path)
+- EKS/ECS → VPC Endpoints (private, thin dashed lines)
+- NAT → Internet (thin line, labeled "fallback egress")
+
+Key annotations:
+- "All delegate-to-control-plane traffic through proxy"
+- "AWS service calls stay private via VPC endpoints"
+- "Zero inbound from internet to VPC"
+
+Excalidraw hand-drawn style. Muted palette. No gradients.
+```
+
+---
+
+## Section 2: Delegate Architecture
+
+### Diagram 2.1: Delegate Topology
+
+#### Diagram Purpose
+Shows where delegates are deployed, their distribution across clusters, replica counts, and tagging model. Satisfies ask.md: "Where delegates are deployed," "Delegate topology," and "Tagging/selection model."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style topology diagram showing CI/CD delegate distribution across infrastructure. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Central control plane at top, three EKS clusters in middle row, ECS cluster group at bottom.
+
+TOP CENTER:
+- Harness SaaS (cloud, muted blue) with arrow down through:
+- Proxy (small orange box) labeled "Corporate Proxy"
+
+MIDDLE ROW — Three EKS clusters side by side:
+
+1. EKS PRIMARY (large rounded rectangle, muted green fill):
+   - Label: "EKS-YY (PRIMARY)"
+   - Inside two boxes:
+     - CI Delegates (green): "4-8 pods (HPA)" — Tags: "centralized-harness-ci-delegate"
+     - CD Delegate (yellow warning): "1 pod ⚠️" — "harness-cd-delegate-golden-prod"
+
+2. EKS LEGACY/BLUE (large rounded rectangle, muted gray fill):
+   - Label: "EKS-B1 (LEGACY)"
+   - Inside:
+     - CI Delegates: "Tags: centralized-harness-ci-delegate (shared tag = failover)"
+     - CD Delegate (yellow): "1 pod ⚠️"
+     - Terraform Delegate: "1-2 pods (HPA)"
+
+3. EKS GREEN (large rounded rectangle, muted teal fill):
+   - Label: "EKS-G1 (GREEN/UPGRADE)"
+   - Inside:
+     - CI Delegates: "4+ pods" — Tags: "centralized-harness-ci-delegate-g1 (different tag!)"
+     - CD Delegate (yellow): "1 pod ⚠️"
+
+BOTTOM ROW:
+- ECS FARGATE (large rounded rectangle, muted purple fill):
+  - Label: "ECS Clusters 1-12 (Fargate)"
+  - Inside: "CD Delegates: 2-5 tasks per cluster (autoscaling)"
+  - "28-70 total active tasks"
+
+Connections: All clusters have outbound arrows through proxy to Harness SaaS.
+
+KEY ANNOTATIONS (thin text):
+- Between EKS-YY and EKS-B1: "Shared CI tag = automatic failover"
+- Near EKS-G1: "Separate tag — NO automatic failover"
+- Near all CD delegates: "⚠️ 1 replica = single point of failure"
+- Bottom note: "All connections outbound-only — delegates poll Harness"
+
+Excalidraw hand-drawn style. Muted palette. No gradients.
+```
+
+---
+
+### Diagram 2.2: Delegate Selection & Failure Handling
+
+#### Diagram Purpose
+Shows how pipelines resolve to specific delegates and what happens during failures. Satisfies ask.md: "how pipelines resolve to delegates" and "Failure handling."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style decision flow diagram showing CI/CD delegate selection and failure scenarios. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Split into two halves — LEFT: Selection Model, RIGHT: Failure Scenarios.
+
+LEFT HALF — "Delegate Selection Model":
+- Pipeline (box at top) with arrows branching down based on type:
+  - "CI Build" → diamond "Tag: centralized-harness-ci-delegate" → resolves to "Any of: EKS-YY or EKS-B1 (load distributed)"
+  - "CI on Green" → diamond "Tag: ...-g1" → resolves to "EKS-G1 only"
+  - "EKS Deploy" → diamond "By Name (not tag)" → resolves to "golden-prod delegate"
+  - "ECS Deploy" → diamond "Tag: harness-cd-..." → resolves to "Any ECS task in pool"
+  - "Terraform" → diamond "Tag: ...-terraform" → resolves to "Terraform delegate"
+
+RIGHT HALF — "Failure Scenarios" (four rows):
+1. CI Pod Fails → "K8s restarts, HPA maintains 4+, in-flight picked up by another" → ✅ GREEN checkmark "< 30s recovery"
+2. EKS CD Pod Fails → "K8s restarts, 1 replica only" → ⚠️ YELLOW "1-2 min, deploys blocked"
+3. ECS Task Fails → "ECS replaces, min 2 tasks maintained" → ✅ GREEN "Auto-recovery"
+4. Full Cluster Down → "CI: failover via shared tag" → ✅/❌ "CI OK, CD blocked"
+
+Excalidraw hand-drawn style. Muted palette. No gradients. Use bold outlines on the failure scenario boxes.
+```
+
+---
+
+## Section 3: Build Execution Model
+
+### Diagram 3.1: Build Pod Lifecycle
+
+#### Diagram Purpose
+Shows the complete lifecycle of a build from provision through teardown. Satisfies ask.md: "Lifecycle of a build (provision → execute → teardown)" and "Isolation model."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style sequence/lifecycle diagram showing a CI build pod's complete lifecycle. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Horizontal timeline flowing left-to-right with numbered phases:
+
+PHASE 1 — PROVISION (muted blue background):
+- Harness SaaS dispatches task → CI Delegate receives via outbound poll
+- Delegate submits pod spec to K8s scheduler
+- K8s schedules pod on c5.9xlarge node
+- Label: "Pod created in build namespace (ephemeral)"
+
+PHASE 2 — INITIALIZE (muted green background):
+- Build pod pulls builder image from ECR (flat cylinder icon)
+- Build pod restores dependency cache from S3 (flat cylinder icon)
+- Build pod clones source via proxy → Bitbucket
+- Resources shown: "2 vCPU / 4 GiB per step"
+
+PHASE 3 — EXECUTE (muted orange background, largest section):
+- Build & unit test (box)
+- Image build via Kaniko (box with annotation: "rootless, no Docker daemon")
+- Push image to ECR (arrow to cylinder)
+- Security scans: SonarQube + OSS/SBOM (boxes)
+- Write updated cache to S3 (arrow to cylinder)
+
+PHASE 4 — TEARDOWN (muted red/gray background):
+- Report results to delegate → delegate reports to Harness
+- K8s terminates pod immediately
+- Bold annotation: "No persistent state — pod removed completely"
+
+Bottom annotation strip:
+- "Isolation: Each pipeline run = own pod | Each step = own container | Kaniko = non-privileged"
+- "Network: ECR/S3 via VPC endpoints (private) | External via proxy"
+
+Excalidraw hand-drawn style. Muted palette. No gradients.
+```
+
+---
+
+## Section 4: Scaling Model
+
+### Diagram 4.1: Multi-Layer Scaling
+
+#### Diagram Purpose
+Shows how the delegate layer and build infrastructure scale at each tier. Satisfies ask.md: "How delegate layer scales," "How build infrastructure scales," and "parallel execution capacity."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style layered scaling diagram for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Three horizontal layers stacked vertically, each showing scaling behavior:
+
+LAYER 1 — CI DELEGATE SCALING (top, muted green):
+- HPA icon with settings: "Min: 4 pods | Max: 8 pods | Trigger: CPU ≥ 60%"
+- Visual showing 4 small pod icons expanding to 8 pod icons with a scaling arrow
+- Each pod: "1 vCPU / 4 GiB"
+- Label: "CI Delegate Pods (EKS)"
+
+LAYER 2 — NODE SCALING (middle, muted blue):
+- Cluster Autoscaler icon with settings: "Min: 4 nodes | Max: 20 nodes | Strategy: least-waste"
+- Visual showing 4 large server icons expanding to 20 with scaling arrow
+- Each node: "c5.9xlarge (36 vCPU / 72 GiB)"
+- Capacity callout (bold): "Max: 720 vCPU / 1.4 TiB RAM"
+
+LAYER 3 — BUILD POD SCALING (bottom, muted orange):
+- Shows pods filling nodes: "~35 builds per node at 2vCPU/4GiB"
+- Total capacity callout: "~350 concurrent builds (theoretical max)"
+- Warning annotation (bold, yellow): "⚠️ No explicit concurrency cap — builds queue at K8s scheduler"
+
+RIGHT SIDE — CD SCALING (separate column):
+- ECS CD (green): "2-5 Fargate tasks, autoscaling at CPU/Mem 60%"
+- EKS CD (red/warning): "1 replica FIXED — ⚠️ NO SCALING, serial execution only"
+- Terraform: "1-2 pods (HPA)"
+
+Bottom annotation: "Known bottleneck: EKS CD at 1 replica blocks concurrent K8s deployments"
+
+Excalidraw hand-drawn style. Muted palette. No gradients.
+```
+
+---
+
+## Section 5: AWS Runtime Design
+
+### Diagram 5.1: AWS Account & Region Layout
+
+#### Diagram Purpose
+Shows EKS/EC2 architecture, clusters, node groups, and multi-region layout. Satisfies ask.md: "EKS/EC2 architecture (clusters, node groups, regions)" and "Network design."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style cloud infrastructure diagram showing AWS account layout for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Two regions side by side with internal structure:
+
+LEFT (larger) — US-EAST-1 (PRIMARY):
+- Large rounded rectangle labeled "AWS PROD — us-east-1"
+- Inside a VPC boundary (dashed):
+  - Two AZ columns side by side:
+    - AZ us-east-1a: Private subnet (100.72.0.0/18) with EKS nodes + ECS tasks
+    - AZ us-east-1b: Private subnet (10.72.64.0/18) with EKS nodes + ECS tasks
+  - Three EKS cluster boxes (stacked):
+    - EKS-YY (PRIMARY, green): "c5.9xlarge × 4-20, Cilium CNI"
+    - EKS-B1 (LEGACY, gray): "c5.9xlarge × 4-20"
+    - EKS-G1 (GREEN, teal): "c5.9xlarge × 4-20, v6"
+  - ECS Fargate section: "14 clusters, 28-70 tasks"
+  - VPC Endpoints (grouped small boxes): "Secrets Manager | ECR | S3 | SNS | Lambda | API GW"
+  - Shared Storage (cylinders): "ECR Registry | S3 Build Cache | KMS Keys"
+  - Aurora PostgreSQL (cylinder): spanning both AZ subnets
+  - NAT Gateway (small box at VPC edge)
+  - Lambda Infrastructure (small box): "Deployer v4.0.0"
+
+RIGHT (smaller) — EU-WEST-2:
+- Smaller rounded rectangle labeled "AWS PROD — eu-west-2" with yellow warning fill
+- Inside:
+  - Two AZ subnets: "100.72.0.0/18 + 100.72.64.0/18"
+  - ECS box only: "4 CD Fargate delegates"
+  - Bold warning annotations:
+    - "❌ No EKS clusters"
+    - "❌ No CI delegates"
+    - "⚠️ DR validity unconfirmed — may depend on us-east-1 ECR/KMS"
+
+Connection between regions: dashed line with "?" label
+
+Bottom specs bar:
+- "EBS: 60 GiB gp2/node | AMI: self-heal | 100% on-demand (no Spot)"
+
+Excalidraw hand-drawn style. Muted palette. No gradients.
+```
+
+---
+
+## Section 6: Reliability & High Availability
+
+### Diagram 6.1: HA Topology & Blast Radius
+
+#### Diagram Purpose
+Shows failure domains, redundancy model, and blast radius boundaries. Satisfies ask.md: "Multi-AZ strategy," "Delegate redundancy and failover," and "Blast radius boundaries."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style reliability and blast radius diagram for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Concentric failure domains from small (contained) to large (catastrophic), arranged as nested rounded rectangles:
+
+INNERMOST — POD-LEVEL (green, contained):
+- "Single build pod crash → only that build fails"
+- "ECS task crash → ECS auto-replaces (min 2)"
+- "Single EKS node fails → K8s reschedules, autoscaler adds node"
+- Recovery: "30s - 7 min"
+- ✅ checkmarks
+
+MIDDLE — CLUSTER-LEVEL (yellow, partial impact):
+- "EKS-YY unavailable → CI failover to EKS-B1 (shared tag)"
+- "EKS CD delegate down → EKS deploys BLOCKED (1 replica) ⚠️"
+- Recovery: "Minutes, but CD has no failover"
+- Mix of ✅ and ⚠️
+
+OUTER — REGION-LEVEL (red/orange, high impact):
+- "us-east-1 AZ failure → K8s/ECS migrate to healthy AZ" ✅
+- "us-east-1 full region failure:"
+  - "CI builds: NO FALLBACK ❌"
+  - "EKS deploys: NO FALLBACK ❌"
+  - "ECS CD: 4 delegates in eu-west-2 BUT DR unverified ⚠️"
+
+OUTERMOST — CONTROL PLANE (dark red, total impact):
+- "Harness SaaS outage → ALL pipelines stop ❌"
+- "No local fallback — full SaaS dependency"
+
+RIGHT SIDE — Recovery Time Table:
+- CI delegate pod: ~30-90s
+- EKS CD delegate: ~1-3 min
+- ECS task: ~60-120s
+- EKS node: ~3-7 min
+- In-flight build: Manual re-trigger
+- Harness SaaS: Wait for vendor recovery
+
+Excalidraw hand-drawn style. Muted palette. Red for critical failures, yellow for partial, green for contained.
+```
+
+---
+
+## Section 7: Security Model
+
+### Diagram 7.1: IAM/IRSA Architecture & Secret Flow
+
+#### Diagram Purpose
+Shows how delegates and builds authenticate to AWS and how secrets flow. Satisfies ask.md: "IAM/IRSA design," "Secret management approach," and "Isolation between teams."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style security architecture diagram for a CI/CD platform's IAM and secret management. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Three vertical lanes — LEFT: K8s Service Accounts, CENTER: IAM Roles, RIGHT: AWS Resources.
+
+LEFT LANE — "K8s Service Accounts":
+- Four boxes stacked vertically:
+  1. "harness-ci-sa (ns: harness-ci)" — green
+  2. "harness-cd-sa (ns: harness-cd)" — blue
+  3. "apps-sa (ns: apps)" — purple
+  4. "kaniko-sa (ns: harness-ci)" — orange
+
+CENTER LANE — "IAM Roles (IRSA)":
+- Four corresponding role boxes connected by arrows from left:
+  1. "harness-ci-eks" → Permissions: "Secrets Manager: r/w /application/*, SSM: read"
+  2. "harness-cd-eks" → Permissions: "Secrets Manager: r/w /application/*, SSM: read"
+  3. "apps-eks" → Permissions: "Secrets Manager: r/w /application/*, KMS: harness-api key"
+  4. "kaniko-eks" → Permissions: "SSM: read, KMS: app1 key (encrypt/decrypt)"
+
+RIGHT LANE — "AWS Resources" (cylinders/boxes):
+- Secrets Manager (cylinder): "/application/* namespace, KMS-encrypted"
+- KMS Keys (box): "app1 (kaniko) | harness-api (apps)"
+- SSM Parameters (box): "read-only access"
+
+BOTTOM SECTION — "Secret Lifecycle Flow":
+- Horizontal flow: Developer → "Creates secret via API/UI" → Secrets Manager → "IRSA via VPC endpoint (private)" → Delegate Pod → "Injects as env var or file mount" → Pipeline Step
+
+WARNING CALLOUT (bold, red border):
+- "⚠️ All roles share /application/* path — no per-team scoping"
+- "Cross-team secret access is architecturally possible"
+
+ADDITIONAL SECTION — "ECS Task IAM":
+- Separate box: "ECS Task Role: credentials via Secrets Manager (SAML tokens)"
+
+SECURITY CONTROLS sidebar:
+- "runAsNonRoot: true"
+- "No privilege escalation"
+- "Capabilities: drop ALL"
+- "Seccomp: RuntimeDefault"
+- "Kaniko: rootless (no Docker daemon)"
+
+Excalidraw hand-drawn style. Muted palette. No gradients. Use red for warnings, green for secure controls.
+```
+
+---
+
+## Section 8: Observability & Operations
+
+### Diagram 8.1: Monitoring Stack & Gaps
+
+#### Diagram Purpose
+Shows the monitoring toolchain, what is visible vs. not, and alerting gaps. Satisfies ask.md: "How we monitor delegates," "How we monitor builds," "Logging and traceability," and "Alerting model."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style observability architecture diagram for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Three columns — LEFT: Data Sources, CENTER: Monitoring Tools, RIGHT: Visibility Status.
+
+LEFT COLUMN — "What Generates Signals":
+- EKS Delegates (box): "K8s probes: liveness GET /api/health :3460, period 30s"
+- ECS Delegates (box): "Health check: echo hello, interval 10s, 3 retries"
+- Build Pods (dashed box): "Ephemeral — logs only, no metrics ⚠️"
+- EKS Nodes (box): "Node-level CPU/memory"
+- Pipelines (box): "Success/failure, duration, artifacts"
+
+CENTER COLUMN — "Monitoring Tools":
+- CloudWatch (box, muted orange): "Container Insights (partial in PROD), 5m scrape interval, 3-day log retention ⚠️"
+- Dynatrace (box, muted green): "ECS sidecar agent, synthetic checks every 5 min, saturation detection"
+- Harness Native (box, muted blue): "Log service (all step logs), dashboards (pipeline rates, delegate health)"
+- Prometheus (box, grayed out with X): "Disabled in PROD ⚠️"
+
+RIGHT COLUMN — "Visibility Matrix":
+- ✅ GREEN items: "Delegate health, connectivity, build logs, pipeline rates, build duration, node CPU/mem"
+- ❌ RED items (bold): "No alerting/paging config, no long-term metrics, no build queue depth monitoring, log retention only 3 days, no pod-level metrics in PROD"
+
+BOTTOM — "Alerting Model (Current)":
+- Dynatrace → "Synthetic failures → Distribution list notification"
+- Dynatrace → "Saturation/capacity breach → Alert + SNOW ticket"
+- Warning box: "⚠️ No PagerDuty/OpsGenie integration found — incident response relies on email distribution list"
+
+Excalidraw hand-drawn style. Muted palette. No gradients. Use red for gaps, green for working.
+```
+
+---
+
+## Section 9: Cost & Efficiency
+
+### Diagram 9.1: Cost Drivers & Controls
+
+#### Diagram Purpose
+Shows where primary CI/CD cost drivers are and what controls exist. Satisfies ask.md: "Where the primary CI cost drivers are" and "Any current controls."
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style cost breakdown diagram for a CI/CD platform. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Three sections arranged top-to-bottom — Cost Drivers, Current Controls, Optimization Opportunities.
+
+TOP SECTION — "Primary Cost Drivers" (three columns):
+
+Column 1 — COMPUTE (largest, bold border, muted red):
+- EKS EC2 (dominant): "c5.9xlarge on-demand, ~$1.53/hr per node"
+- "4 clusters × 4-20 nodes = 16-80 nodes"
+- "~$24/hr idle → $120/hr peak"
+- "100% on-demand (no Spot in PROD)"
+- ECS Fargate: "~$0.10/hr per task, 28-70 tasks, ~$3-7/hr"
+- Bubble cost note: "Blue/green EKS upgrades = temporary double capacity"
+
+Column 2 — STORAGE (medium, muted orange):
+- ECR: "All images + cache layers, NO TTL policy ⚠️"
+- S3: "Maven + Poetry cache (scheduled cleanup)"
+- EBS: "60 GiB × 16-80 nodes = 960-4800 GiB"
+
+Column 3 — NETWORK (smallest, muted blue):
+- NAT Gateway: "Non-endpoint egress"
+- Cross-AZ transfer: "Build pods to ECR/S3"
+
+MIDDLE SECTION — "Current Controls" (green border):
+- Budget: "$10,000/month PROD | Alert at 90% | 5% daily anomaly detection"
+- S3 cleanup: "Scheduled Maven cache purge"
+- AppMesh limit: "30 ECS clusters (16 used)"
+- Per-project cost: "2 dedicated delegates + 2 IAM roles per project (ECS)"
+
+BOTTOM SECTION — "Optimization Opportunities" (yellow/amber):
+- "Spot instances for CI builds (fault-tolerant workload) — currently 0%"
+- "ECR lifecycle policies — images accumulate without cleanup"
+- "Consolidate 3-4 EKS clusters if blue/green complete"
+- "Assess if all 14 ECS clusters still needed"
+- "Shared delegate pool proposal — eliminate per-project scaling"
+
+Budget dial icon showing: "$10K/month budget"
+
+Excalidraw hand-drawn style. Muted palette. No gradients. Size boxes proportional to cost impact.
+```
+
+---
+
+## Section 10: Policy Enforcement (OPA)
+
+### Diagram 10.1: Pipeline Policy Gates
+
+#### Diagram Purpose
+Shows the OPA policy enforcement flow through pipeline stages. Complements ask.md's security model requirements — "Isolation between teams/applications" via policy controls.
+
+#### Image Generation Prompt
+
+```
+Create an Excalidraw-style pipeline policy enforcement diagram. Use flat icons, bold strokes for important elements, thin lines for connections and annotations, and a muted color palette.
+
+Layout: Horizontal pipeline flow left-to-right with policy gates between stages.
+
+PIPELINE STAGES (boxes connected by arrows):
+1. CI STAGE (muted blue box): "Build + Test"
+2. GATE 1 (diamond, yellow): "Scan Policy (WARNING)"
+   - Checks: "Sonar gate | OSS scan | Image scan"
+   - "Warning only — does not block"
+3. DEV DEPLOY (muted green box): "Deploy to DEV"
+4. GATE 2 (diamond, red): "CD Scan Policy (ERROR = BLOCK)"
+   - Checks: "Security scan | Static analysis | OSS scan | Image scan"
+   - "Hard block — pipeline stops on failure"
+5. TEST DEPLOY (muted green box): "Deploy to TEST"
+6. GATE 3 (diamond, red): "PROD Controls"
+   - Checks: "ServiceNow ticket | PROD approval group | Manual evidence"
+   - "Human approval required"
+7. PROD DEPLOY (muted green box, bold border): "Deploy to PROD"
+
+ALWAYS-ENFORCED BAR (running along bottom, muted purple):
+- "42+ policies always active:"
+- "Delegate selector restrictions (K8s PROD only ⚠️)"
+- "Stable template version enforcement"
+- "No prohibited proxy config"
+- "Org variable protection"
+
+WARNING CALLOUT:
+- "⚠️ ECS PROD delegates have no equivalent selector restriction policy"
+
+Excalidraw hand-drawn style. Muted palette. No gradients. Red diamonds for blocking gates, yellow for warnings.
+```
